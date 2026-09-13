@@ -2,11 +2,18 @@ treasury:
   starting_capital_usd: 1000
   operating_reserve_pct: 0.15
 
+# The economics of staying alive. This is what makes the survival mechanic real:
+# the agent pays rent every cycle out of a reserve that ONLY profits refill.
+survival:
+  daily_operating_cost_usd: 1.00   # rent: infra + the cost of existing. Must be earned.
+  initial_runway_days: 30          # starting reserve = daily_cost * this. Its grace period.
+  charge_llm_spend: true           # real OpenRouter spend is debited from the reserve too
+
 kill_switch:
   max_drawdown_pct: 0.30
   rolling_loss_window_days: 30
   rolling_loss_pct: 0.10
-  min_operating_reserve_usd: 5
+  min_operating_reserve_usd: 0     # death at reserve <= 0 (starvation)
   resurrection_mode: manual
 
 allocation:

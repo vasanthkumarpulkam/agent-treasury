@@ -64,6 +64,21 @@ CREATE TABLE IF NOT EXISTS system_state (
 -- Every probability estimate the research agent makes, whether or not it led to a trade.
 -- The ones that DIDN'T clear the edge threshold matter just as much for calibration:
 -- scoring only the trades you took tells you nothing about whether the model is any good.
+-- The graveyard. Every generation that died, why, and what it cost.
+-- If this table grows, that IS the result: it's evidence the strategy doesn't work,
+-- not an inconvenience to be cleared.
+CREATE TABLE IF NOT EXISTS graveyard (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    generation INTEGER NOT NULL,
+    birth_ts REAL NOT NULL,
+    death_ts REAL NOT NULL,
+    lifespan_days REAL NOT NULL,
+    starting_capital REAL NOT NULL,
+    final_equity REAL NOT NULL,
+    pnl REAL NOT NULL,
+    cause_of_death TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS estimates (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts REAL NOT NULL,
@@ -265,3 +280,29 @@ class Database:
             ).fetchone()["n"]
             traded = conn.execute("SELECT COUNT(*) n FROM estimates WHERE traded=1").fetchone()["n"]
             return {"total": total, "resolved": resolved, "traded": traded}
+
+    # --- survival / generations ---
+    def record_death(self, generation, birth_ts, death_ts, starting_capital, final_equity, cause):
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO graveyard(generation, birth_ts, death_ts, lifespan_days, "
+                "starting_capital, final_equity, pnl, cause_of_death) VALUES (?,?,?,?,?,?,?,?)",
+                (generation, birth_ts, death_ts, (death_ts - birth_ts) / 86400.0,
+                 starting_capital, final_equity, final_equity - starting_capital, cause),
+            )
+
+    def graveyard(self):
+        with self._conn() as conn:
+            rows = conn.execute("SELECT * FROM graveyard ORDER BY generation").fetchall()
+            return [dict(r) for r in rows]
+
+    def reset_pnl_baseline(self):
+        """Mark all existing realized-P&L events as belonging to a previous generation so
+        the new generation's equity starts clean at its own capital. History is kept (the
+        rows stay, retagged) -- a new generation should not be able to erase the evidence
+        of what the last one did."""
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE ledger_events SET event_type='realized_pnl_archived' "
+                "WHERE event_type='realized_pnl'"
+            )

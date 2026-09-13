@@ -13,11 +13,16 @@ from governor.models import Proposal
 def make_config(**overrides):
     cfg = {
         "treasury": {"starting_capital_usd": 1000.0, "operating_reserve_pct": 0.15},
+        "survival": {
+            "daily_operating_cost_usd": 1.0,
+            "initial_runway_days": 30,
+            "charge_llm_spend": True,
+        },
         "kill_switch": {
             "max_drawdown_pct": 0.30,
             "rolling_loss_window_days": 30,
             "rolling_loss_pct": 0.10,
-            "min_operating_reserve_usd": 20,
+            "min_operating_reserve_usd": 0,
             "resurrection_mode": "manual",
         },
         "allocation": {

@@ -10,18 +10,65 @@ class Orchestrator:
         self.bitcoin_agent = bitcoin_agent
         self.mode = mode
 
+    def _build_price_lookup(self) -> dict:
+        """Current price for every open position, so equity can be marked to market.
+
+        Best-effort: a position we can't price is simply excluded from unrealized P&L
+        rather than assumed flat, and that's logged -- silently treating an unpriceable
+        position as break-even is how a dying system looks healthy."""
+        lookup = {}
+        positions = self.governor.db.open_positions()
+        if not positions:
+            return lookup
+
+        btc_symbols = {p["market_or_symbol"] for p in positions if p["leg"] == "bitcoin"}
+        if btc_symbols:
+            try:
+                ticker = self.bitcoin_agent.client.fetch_ticker()
+                for symbol in btc_symbols:
+                    lookup[symbol] = ticker["last"]
+            except Exception as e:
+                logger.warning("Could not price bitcoin positions: %s", e)
+
+        for position in positions:
+            if position["leg"] != "polymarket":
+                continue
+            token_id = position["market_or_symbol"]
+            try:
+                prices = self.polymarket_agent.client.get_orderbook_prices(token_id)
+                if prices.get("mid") is not None:
+                    lookup[token_id] = prices["mid"]
+                else:
+                    logger.warning("No mid price for token %s; excluded from mark-to-market", token_id)
+            except Exception as e:
+                logger.warning("Could not price polymarket token %s: %s", token_id, e)
+
+        return lookup
+
     def run_cycle(self):
         logger.info("=== Orchestration cycle start (mode=%s) ===", self.mode)
 
-        self.governor.check_kill_switch()
+        # 1. Pay rent for existing. This happens BEFORE anything else and regardless of
+        #    whether the agent trades -- existing is not free, which is the whole point.
+        self.governor.charge_metabolic_cost()
+
+        # 2. Price every open position so the kill-switch sees mark-to-market reality,
+        #    not just realized P&L.
+        price_lookup = self._build_price_lookup()
+
+        self.governor.check_kill_switch(price_lookup)
         if self.governor.is_killed():
             reason = self.governor.db.get_state("killed_reason", "unknown")
             logger.error("System is KILLED (%s). No new proposals will be evaluated. "
                          "Call governor.resume() after review to continue.", reason)
             return {"status": "killed", "reason": reason}
 
-        equity = self.governor.current_equity_usd()
-        logger.info("Current equity: $%.2f", equity)
+        equity = self.governor.mark_to_market_equity(price_lookup)
+        reserve = self.governor.db.get_state("operating_reserve_usd", 0.0)
+        daily_cost = self.governor.cfg.get("survival", {}).get("daily_operating_cost_usd", 0.0)
+        runway = (reserve / daily_cost) if daily_cost > 0 else float("inf")
+        logger.info("Equity (mark-to-market): $%.2f | reserve: $%.2f | runway: %.1f days",
+                    equity, reserve, runway)
 
         pm_multiplier = self.governor.leg_allocation_multiplier("polymarket")
         btc_multiplier = self.governor.leg_allocation_multiplier("bitcoin")
@@ -53,6 +100,11 @@ class Orchestrator:
             proposals += btc_proposals
         else:
             logger.warning("Bitcoin leg allocation is zeroed out; skipping proposal generation")
+
+        # 3. The agent pays for its own thinking.
+        llm_spend = getattr(self.polymarket_agent, "llm", None)
+        if llm_spend is not None and self.governor.cfg.get("survival", {}).get("charge_llm_spend", True):
+            self.governor.charge_llm_spend(getattr(llm_spend, "_spent_this_cycle", 0.0))
 
         results = {"approved": [], "rejected": []}
         for proposal in proposals:
