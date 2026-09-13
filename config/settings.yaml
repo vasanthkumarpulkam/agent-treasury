@@ -26,7 +26,7 @@ polymarket:
   category_allowlist: []
   market_allowlist: []
   max_markets_per_cycle: 15
-  llm_model: "anthropic/claude-3.5-sonnet"
+  llm_model: "anthropic/claude-sonnet-5"
   llm_max_spend_per_cycle_usd: 0.50
   llm_estimated_cost_per_call_usd: 0.01
 
