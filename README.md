@@ -70,7 +70,11 @@ kill-switch, and only then evaluates new proposals.
 1. Run in paper mode for at least 4-8 weeks. Inspect `storage/agent_treasury.db` to see
    whether the strategy has real edge.
 2. Backtest the BTC signal agent against historical data.
-3. Replace `pods/polymarket/research_agent.py`'s placeholder `model_probability()` with a real,
-   validated estimator — it deliberately returns zero trades until you do.
+3. The Polymarket agent calls OpenRouter for a real probability estimate (set
+   `OPENROUTER_API_KEY` in `.env`; get one at https://openrouter.ai/keys), gated by
+   `min_edge_pct` and a per-cycle spend cap (`llm_max_spend_per_cycle_usd` in config).
+   Without a key it safely falls back to "no edge" (same zero-trades default as before).
+   An LLM reading a market description is still just one signal — treat it as a starting
+   point to validate against real outcomes, not a finished edge.
 4. Start live with a small `starting_capital_usd` and tight `max_drawdown_pct`.
 5. Treat every kill-switch trigger as a stop-and-review event, not a bug to route around.
