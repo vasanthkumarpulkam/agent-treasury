@@ -94,17 +94,26 @@ class LLMEstimator:
                         {"role": "user", "content": user_prompt},
                     ],
                     "temperature": 0.2,
-                    "max_tokens": 200,
+                    "max_tokens": 800,
+                    # Sonnet 5 is a reasoning-capable model; without this it can spend the
+                    # whole token budget on internal reasoning and return empty/truncated
+                    # content. We want the final JSON answer only, not the reasoning trace.
+                    "reasoning": {"enabled": False},
                 },
-                timeout=30,
+                timeout=45,
             )
             resp.raise_for_status()
             self._spent_this_cycle += self.estimated_cost_per_call
 
-            content = resp.json()["choices"][0]["message"]["content"]
+            message = resp.json()["choices"][0]["message"]
+            content = self._extract_text(message)
+            if not content:
+                logger.warning("LLM returned empty content (message=%r)", message)
+                return {"probability": market_implied_prob, "confidence": 0.0, "reasoning": "empty LLM response"}
+
             parsed = self._parse_json_response(content)
             if parsed is None:
-                logger.warning("Could not parse LLM response as JSON: %r", content[:200])
+                logger.warning("Could not parse LLM response as JSON: %r", content[:300])
                 return {"probability": market_implied_prob, "confidence": 0.0, "reasoning": "unparseable LLM response"}
 
             prob = float(parsed.get("probability", market_implied_prob))
@@ -116,6 +125,20 @@ class LLMEstimator:
         except Exception as e:
             logger.warning("LLM estimate call failed (%s); falling back to implied probability", e)
             return {"probability": market_implied_prob, "confidence": 0.0, "reasoning": f"error: {e}"}
+
+    @staticmethod
+    def _extract_text(message: dict) -> str:
+        """message["content"] is usually a plain string, but some OpenRouter providers
+        return a list of content blocks (e.g. [{"type": "text", "text": "..."}]), and a
+        reasoning-heavy response can come back with content=None if it ran out of budget
+        before answering. Handle all three without raising."""
+        content = message.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            texts = [block.get("text", "") for block in content if isinstance(block, dict)]
+            return "".join(texts)
+        return ""
 
     @staticmethod
     def _parse_json_response(content: str):
