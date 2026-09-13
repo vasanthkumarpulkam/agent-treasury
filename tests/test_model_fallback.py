@@ -196,3 +196,28 @@ def test_error_body_does_not_charge_spend_budget(monkeypatch):
     monkeypatch.setattr(requests, "post", fake_post)
     est._chat([], "key")
     assert est._spent_this_cycle == pytest.approx(0.01), "only the successful call should be charged"
+
+
+def test_salvages_unquoted_reasoning_field():
+    """Models really do emit this; it cost ~13% of estimates in a live run."""
+    bad = '{"probability": 0.02, "confidence": 0.6, "reasoning": Michigan has trended Democratic.}'
+    parsed = LLMEstimator._parse_json_response(bad)
+    assert parsed is not None
+    assert parsed["probability"] == 0.02
+    assert parsed["confidence"] == 0.6
+
+
+def test_salvages_multiline_unquoted_json():
+    bad = '{\n  "probability": 0.14,\n  "confidence": 0.3,\n  "reasoning": RI-02 is safe.\n}'
+    parsed = LLMEstimator._parse_json_response(bad)
+    assert parsed["probability"] == 0.14
+
+
+def test_strict_json_still_preferred():
+    good = '{"probability": 0.7, "confidence": 0.9, "reasoning": "clean"}'
+    parsed = LLMEstimator._parse_json_response(good)
+    assert parsed["reasoning"] == "clean"
+
+
+def test_returns_none_when_no_probability_present():
+    assert LLMEstimator._parse_json_response("I cannot answer that.") is None

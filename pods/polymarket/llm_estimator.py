@@ -261,15 +261,41 @@ class LLMEstimator:
 
     @staticmethod
     def _parse_json_response(content: str):
+        """Parse the model's JSON answer, tolerating the ways models mangle it.
+
+        Observed in live runs: models emit an UNQUOTED reasoning value, e.g.
+            {"probability": 0.02, "confidence": 0.6, "reasoning": Michigan has trended...}
+        which is invalid JSON and threw away ~13% of otherwise usable estimates. The
+        numbers are the only fields that affect trading, so when strict parsing fails we
+        extract them directly rather than discarding a perfectly good forecast over a
+        missing pair of quotes."""
+        if not content:
+            return None
         content = content.strip()
+
         try:
             return json.loads(content)
         except json.JSONDecodeError:
             pass
+
         match = re.search(r"\{.*\}", content, re.DOTALL)
         if match:
             try:
                 return json.loads(match.group(0))
             except json.JSONDecodeError:
-                return None
-        return None
+                pass
+
+        # Salvage: pull the numeric fields out of malformed JSON.
+        prob = re.search(r'"probability"\s*:\s*([0-9]*\.?[0-9]+)', content)
+        if not prob:
+            return None
+        conf = re.search(r'"confidence"\s*:\s*([0-9]*\.?[0-9]+)', content)
+        reason = re.search(r'"reasoning"\s*:\s*"?([^"}\n]{0,400})', content)
+        try:
+            return {
+                "probability": float(prob.group(1)),
+                "confidence": float(conf.group(1)) if conf else 0.5,
+                "reasoning": (reason.group(1).strip() if reason else "") + " [salvaged from malformed JSON]",
+            }
+        except ValueError:
+            return None

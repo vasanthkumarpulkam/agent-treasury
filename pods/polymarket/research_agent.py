@@ -93,6 +93,15 @@ class PolymarketResearchAgent:
         if estimate["confidence"] <= 0:
             return False, None  # normal fallback path, already logged upstream
 
+        # The model's own confidence is a signal we should respect. In live runs it
+        # reported 0.10 alongside reasoning like "no information about team strength is
+        # provided, so I default to the market price" -- an explicit admission that it
+        # knows nothing. Trading on that is trading on noise dressed as analysis.
+        min_conf = self.cfg.get("min_llm_confidence", 0.40)
+        if estimate["confidence"] < min_conf:
+            return False, (f"model confidence {estimate['confidence']:.2f} below "
+                            f"min_llm_confidence {min_conf} -- it told us it has no information")
+
         if abs(edge) < self.cfg["min_edge_pct"]:
             return False, None  # ordinary "no edge", not worth a log line
 

@@ -36,6 +36,9 @@ polymarket:
   # Cap how far the model may disagree with the market in relative terms. Beyond this,
   # a disagreement is far more likely to be model error than discovered edge.
   max_odds_ratio: 3.0
+  # The model reports its own confidence. When it says 0.10 and explains "no information
+  # provided, defaulting to market price", believe it -- don't trade that.
+  min_llm_confidence: 0.40
   kelly_fraction: 0.125
   category_allowlist: []
   market_allowlist: []

@@ -145,3 +145,21 @@ def test_gate_rejects_insufficient_edge_quietly():
     ok, reason = agent._passes_trade_gates(implied=0.50, fair_value=0.52, edge=0.02, estimate=est)
     assert ok is False
     assert reason is None
+
+
+def test_gate_rejects_self_declared_uninformed_estimates():
+    """The dominant real-world case: model says 0.10 confidence and 'no data provided'."""
+    agent = make_gate_agent()
+    agent.cfg["min_llm_confidence"] = 0.40
+    est = {"probability": 0.65, "confidence": 0.10, "reasoning": "no information provided"}
+    ok, reason = agent._passes_trade_gates(implied=0.50, fair_value=0.65, edge=0.15, estimate=est)
+    assert ok is False
+    assert "no information" in reason
+
+
+def test_gate_allows_confident_estimates():
+    agent = make_gate_agent()
+    agent.cfg["min_llm_confidence"] = 0.40
+    est = {"probability": 0.65, "confidence": 0.75, "reasoning": "strong basis"}
+    ok, reason = agent._passes_trade_gates(implied=0.50, fair_value=0.65, edge=0.15, estimate=est)
+    assert ok is True
