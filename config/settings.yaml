@@ -29,6 +29,13 @@ position_limits:
 
 polymarket:
   min_edge_pct: 0.06
+  # Only trade markets priced in this band. Outside it, liquidity is thin and a fixed
+  # percentage-point edge stops being meaningful (6pp at a price of 0.005 is a 13x claim).
+  min_price: 0.05
+  max_price: 0.95
+  # Cap how far the model may disagree with the market in relative terms. Beyond this,
+  # a disagreement is far more likely to be model error than discovered edge.
+  max_odds_ratio: 3.0
   kelly_fraction: 0.125
   category_allowlist: []
   market_allowlist: []

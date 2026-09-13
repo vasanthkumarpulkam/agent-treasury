@@ -79,6 +79,42 @@ class PolymarketResearchAgent:
             return None
 
 
+    def _passes_trade_gates(self, implied, fair_value, edge, estimate):
+        """Decide whether an estimate justifies a trade. Returns (will_trade, reason).
+
+        An absolute edge threshold alone is not enough. 6 percentage points means very
+        different things at different prices: at 0.50 it's a 12% relative disagreement
+        with the market, but at 0.005 it's claiming the true probability is ~13x what
+        thousands of traders have settled on. The second is not an edge, it's almost
+        always the model being confidently wrong -- and longshot markets are exactly
+        where LLMs hallucinate most and where liquidity is thinnest, so you get filled at
+        a terrible price on your worst ideas. This cost us a real (paper) $15.62 bet on a
+        0.45c market before the guard existed."""
+        if estimate["confidence"] <= 0:
+            return False, None  # normal fallback path, already logged upstream
+
+        if abs(edge) < self.cfg["min_edge_pct"]:
+            return False, None  # ordinary "no edge", not worth a log line
+
+        min_price = self.cfg.get("min_price", 0.05)
+        max_price = self.cfg.get("max_price", 0.95)
+        if not (min_price <= implied <= max_price):
+            return False, (f"market price {implied:.4f} outside tradeable band "
+                            f"[{min_price}, {max_price}] -- extreme prices are illiquid and "
+                            f"estimates there are unreliable")
+
+        # Extraordinary claims: cap how far the model may disagree with the market in
+        # RELATIVE terms, in both directions.
+        max_ratio = self.cfg.get("max_odds_ratio", 3.0)
+        if implied > 0 and fair_value > 0:
+            ratio = max(fair_value / implied, implied / fair_value)
+            if ratio > max_ratio:
+                return False, (f"model claims {ratio:.1f}x the market's probability "
+                                f"({implied:.3f} -> {fair_value:.3f}), above max_odds_ratio "
+                                f"{max_ratio} -- treating as model error, not edge")
+
+        return True, None
+
     def _log_estimate(self, market, question, implied, estimate, edge, traded):
         if self.db is None:
             return
@@ -129,10 +165,9 @@ class PolymarketResearchAgent:
             fair_value = estimate["probability"]
             edge = fair_value - implied
 
-            will_trade = (
-                abs(edge) >= self.cfg["min_edge_pct"]
-                and estimate["confidence"] > 0
-            )
+            will_trade, reject_reason = self._passes_trade_gates(implied, fair_value, edge, estimate)
+            if reject_reason:
+                logger.info("No trade on %r: %s", question[:55], reject_reason)
 
             # Log EVERY estimate, not just the traded ones. Scoring only the trades you
             # took is survivorship bias -- it tells you nothing about whether the model

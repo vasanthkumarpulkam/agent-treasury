@@ -77,3 +77,71 @@ def test_outcome_prices_parses_both_sides():
     agent = make_agent()
     market = {"outcomePrices": '["0.62", "0.38"]'}
     assert agent._outcome_prices(market) == (0.62, 0.38)
+
+
+def _estimate(conf=0.8):
+    return {"probability": 0.0, "confidence": conf, "reasoning": ""}
+
+
+def make_gate_agent():
+    cfg = make_config()
+    cfg["polymarket"].update({"min_edge_pct": 0.06, "min_price": 0.05,
+                               "max_price": 0.95, "max_odds_ratio": 3.0})
+    return PolymarketResearchAgent(client=None, config=cfg)
+
+
+def test_gate_allows_normal_edge_at_mid_price():
+    agent = make_gate_agent()
+    est = {"probability": 0.60, "confidence": 0.8, "reasoning": ""}
+    ok, reason = agent._passes_trade_gates(implied=0.50, fair_value=0.60, edge=0.10, estimate=est)
+    assert ok is True and reason is None
+
+
+def test_gate_rejects_extreme_longshot_prices():
+    """The real failure: a $15.62 bet on a market priced at 0.45 cents."""
+    agent = make_gate_agent()
+    est = {"probability": 0.08, "confidence": 0.8, "reasoning": ""}
+    ok, reason = agent._passes_trade_gates(implied=0.0045, fair_value=0.08, edge=0.0755, estimate=est)
+    assert ok is False
+    assert "outside tradeable band" in reason
+
+
+def test_gate_rejects_near_certain_prices():
+    agent = make_gate_agent()
+    est = {"probability": 0.90, "confidence": 0.8, "reasoning": ""}
+    ok, reason = agent._passes_trade_gates(implied=0.98, fair_value=0.90, edge=-0.08, estimate=est)
+    assert ok is False
+    assert "outside tradeable band" in reason
+
+
+def test_gate_rejects_extraordinary_relative_claims():
+    """In-band price, big absolute edge, but the model claims 4x the market."""
+    agent = make_gate_agent()
+    est = {"probability": 0.40, "confidence": 0.8, "reasoning": ""}
+    ok, reason = agent._passes_trade_gates(implied=0.10, fair_value=0.40, edge=0.30, estimate=est)
+    assert ok is False
+    assert "max_odds_ratio" in reason
+
+
+def test_gate_rejects_extraordinary_claims_in_both_directions():
+    agent = make_gate_agent()
+    est = {"probability": 0.10, "confidence": 0.8, "reasoning": ""}
+    ok, reason = agent._passes_trade_gates(implied=0.60, fair_value=0.10, edge=-0.50, estimate=est)
+    assert ok is False
+    assert "max_odds_ratio" in reason
+
+
+def test_gate_rejects_zero_confidence_without_noise():
+    agent = make_gate_agent()
+    est = {"probability": 0.60, "confidence": 0.0, "reasoning": ""}
+    ok, reason = agent._passes_trade_gates(implied=0.50, fair_value=0.60, edge=0.10, estimate=est)
+    assert ok is False
+    assert reason is None  # fallback path shouldn't spam logs
+
+
+def test_gate_rejects_insufficient_edge_quietly():
+    agent = make_gate_agent()
+    est = {"probability": 0.52, "confidence": 0.8, "reasoning": ""}
+    ok, reason = agent._passes_trade_gates(implied=0.50, fair_value=0.52, edge=0.02, estimate=est)
+    assert ok is False
+    assert reason is None
