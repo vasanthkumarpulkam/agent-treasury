@@ -1,0 +1,43 @@
+treasury:
+  starting_capital_usd: 1000
+  operating_reserve_pct: 0.15
+
+kill_switch:
+  max_drawdown_pct: 0.30
+  rolling_loss_window_days: 30
+  rolling_loss_pct: 0.10
+  min_operating_reserve_usd: 20
+  resurrection_mode: manual
+
+allocation:
+  polymarket_weight: 0.5
+  bitcoin_weight: 0.5
+  rebalance_frequency_days: 7
+  per_leg_kill_drawdown_pct: 0.40
+
+position_limits:
+  max_single_position_pct: 0.05
+  max_daily_notional_pct: 0.20
+  max_total_exposure_pct: 0.80
+
+polymarket:
+  min_edge_pct: 0.06
+  kelly_fraction: 0.125
+  category_allowlist: []
+  market_allowlist: []
+  max_markets_per_cycle: 15
+
+bitcoin:
+  symbol: "BTC/USD"
+  timeframe: "1h"
+  trend_fast_ma: 20
+  trend_slow_ma: 100
+  vol_lookback: 30
+  vol_size_scaling: true
+  max_leverage: 1.0
+
+scheduler:
+  poll_interval_minutes: 60
+
+logging:
+  db_path: "storage/agent_treasury.db"
