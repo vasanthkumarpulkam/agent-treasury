@@ -133,3 +133,66 @@ def test_failed_models_get_another_chance_next_cycle(monkeypatch):
     assert est._active_idx == 0
     assert est._failed_models == {}
     assert est.model == "model-a"
+
+
+class ErrorBodyResponse(FakeResponse):
+    """HTTP 200 with an error payload instead of a completion -- what OpenRouter returns
+    for moderation blocks, capacity issues and upstream provider failures."""
+    def __init__(self, payload):
+        super().__init__(200)
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+def test_falls_through_on_error_body_with_http_200(monkeypatch):
+    est = LLMEstimator(make_config())
+
+    def fake_post(*a, **k):
+        if k["json"]["model"] == "model-b:free":
+            return FakeResponse(200, "recovered")
+        return ErrorBodyResponse({"error": {"message": "provider capacity exceeded"}})
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    assert est._chat([], "key") == "recovered"
+
+
+def test_falls_through_when_choices_missing(monkeypatch):
+    """The exact KeyError('choices') seen in a live run."""
+    est = LLMEstimator(make_config())
+
+    def fake_post(*a, **k):
+        if k["json"]["model"] == "model-b:free":
+            return FakeResponse(200, "recovered")
+        return ErrorBodyResponse({"id": "x", "object": "chat.completion"})
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    assert est._chat([], "key") == "recovered"
+
+
+def test_falls_through_on_non_json_body(monkeypatch):
+    est = LLMEstimator(make_config())
+
+    class BadJson(FakeResponse):
+        def json(self):
+            raise ValueError("not json")
+
+    def fake_post(*a, **k):
+        return FakeResponse(200, "recovered") if k["json"]["model"] == "model-b:free" else BadJson(200)
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    assert est._chat([], "key") == "recovered"
+
+
+def test_error_body_does_not_charge_spend_budget(monkeypatch):
+    """A failed call must not be billed against the survival budget."""
+    est = LLMEstimator(make_config(models=["paid-a", "paid-b"]))
+
+    def fake_post(*a, **k):
+        return FakeResponse(200, "ok") if k["json"]["model"] == "paid-b" else ErrorBodyResponse(
+            {"error": {"message": "nope"}})
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    est._chat([], "key")
+    assert est._spent_this_cycle == pytest.approx(0.01), "only the successful call should be charged"

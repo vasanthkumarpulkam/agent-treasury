@@ -189,8 +189,34 @@ class LLMEstimator:
                     continue
 
                 resp.raise_for_status()
+
+                # A 200 does NOT guarantee a completion. OpenRouter (and providers behind
+                # it) return HTTP 200 with an {"error": ...} body for moderation blocks,
+                # capacity problems and upstream failures. Assuming otherwise means a
+                # KeyError on ["choices"] -- which is exactly how a naive client silently
+                # breaks the moment a provider has a bad day.
+                try:
+                    data = resp.json()
+                except ValueError:
+                    self._demote(model, "non-JSON response body")
+                    last_error = "non-JSON response body"
+                    continue
+
+                if isinstance(data, dict) and data.get("error"):
+                    err = data["error"]
+                    msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+                    self._demote(model, f"error in 200 body: {msg[:120]}")
+                    last_error = msg
+                    continue
+
+                choices = (data or {}).get("choices")
+                if not choices:
+                    self._demote(model, f"no choices in response: {str(data)[:160]}")
+                    last_error = "no choices in response"
+                    continue
+
                 self._spent_this_cycle += self._cost_of(model)
-                return self._extract_text(resp.json()["choices"][0]["message"])
+                return self._extract_text(choices[0].get("message", {}))
 
             except requests.RequestException as e:
                 self._demote(model, str(e))
