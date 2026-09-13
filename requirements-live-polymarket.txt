@@ -1,0 +1,4 @@
+# Only needed if you set LIVE_MODE=true and actually trade Polymarket.
+# Installed separately because it can fail to resolve on some pip/Python
+# combos, and paper mode / the Bitcoin leg don't need it at all.
+py-clob-client>=0.19.0
