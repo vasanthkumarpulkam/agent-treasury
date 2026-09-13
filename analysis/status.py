@@ -118,23 +118,50 @@ def main():
         config = yaml.safe_load(f)
     db = Database(config["logging"]["db_path"])
 
-    # Best-effort live pricing so the dashboard shows mark-to-market truth.
+    # Best-effort live pricing so the dashboard shows mark-to-market truth. A position we
+    # can't price is excluded from unrealized P&L and reported, never silently assumed flat.
+    import os
+    from dotenv import load_dotenv
+    load_dotenv()
+
     price_lookup = {}
-    try:
-        import os
-        from dotenv import load_dotenv
-        from pods.bitcoin.client import BitcoinClient
-        load_dotenv()
-        positions = db.open_positions()
-        if any(p["leg"] == "bitcoin" for p in positions):
+    unpriced = 0
+    positions = db.open_positions()
+
+    if any(p["leg"] == "bitcoin" for p in positions):
+        try:
+            from pods.bitcoin.client import BitcoinClient
             client = BitcoinClient(live_mode=False, symbol=config["bitcoin"]["symbol"],
                                     exchange_id=os.environ.get("BTC_EXCHANGE", "coinbase"))
             last = client.fetch_ticker()["last"]
             for p in positions:
                 if p["leg"] == "bitcoin":
                     price_lookup[p["market_or_symbol"]] = last
-    except Exception as e:
-        print(f"(could not fetch live prices for mark-to-market: {e})\n")
+        except Exception as e:
+            print(f"(could not price bitcoin positions: {e})")
+            unpriced += sum(1 for p in positions if p["leg"] == "bitcoin")
+
+    pm_positions = [p for p in positions if p["leg"] == "polymarket"]
+    if pm_positions:
+        try:
+            from pods.polymarket.client import PolymarketClient
+            pm_client = PolymarketClient(live_mode=False)
+            for p in pm_positions:
+                try:
+                    mid = pm_client.get_orderbook_prices(p["market_or_symbol"]).get("mid")
+                    if mid is not None:
+                        price_lookup[p["market_or_symbol"]] = mid
+                    else:
+                        unpriced += 1
+                except Exception:
+                    unpriced += 1
+        except Exception as e:
+            print(f"(could not price polymarket positions: {e})")
+            unpriced += len(pm_positions)
+
+    if unpriced:
+        print(f"(warning: {unpriced} open position(s) could not be priced and are "
+              f"EXCLUDED from the equity shown below -- true equity may be worse)\n")
 
     print(format_status(build_status(db, config, price_lookup)))
 
