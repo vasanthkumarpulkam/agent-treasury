@@ -96,6 +96,7 @@ class LLMEstimator:
     def reset_cycle_spend(self):
         """Call once at the start of each orchestration cycle."""
         self._spent_this_cycle = 0.0
+        self.reset_failed_models()
 
     def budget_remaining(self) -> bool:
         # A free model always has budget -- it costs nothing to run.
@@ -197,6 +198,15 @@ class LLMEstimator:
                 continue
 
         raise RuntimeError(f"all {len(self.models)} models failed (last: {last_error})")
+
+    def reset_failed_models(self):
+        """Give every model another chance. Called at the start of each cycle: free-tier
+        rate limits (429) are temporary, so a model that was throttled an hour ago should
+        not stay permanently demoted for the life of the process."""
+        if self._failed_models:
+            logger.info("Resetting model chain; previously failed: %s", list(self._failed_models))
+        self._failed_models = {}
+        self._active_idx = 0
 
     def _demote(self, model: str, reason: str):
         """Mark a model unusable for the rest of this run and advance to the next."""

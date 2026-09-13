@@ -119,3 +119,17 @@ def test_legacy_single_model_config_still_works():
     est = LLMEstimator(cfg)
     assert est.models == ["solo-model"]
     assert est.model == "solo-model"
+
+
+def test_failed_models_get_another_chance_next_cycle(monkeypatch):
+    """Free-tier 429s are temporary -- a throttled model must not stay demoted forever."""
+    est = LLMEstimator(make_config())
+    monkeypatch.setattr(requests, "post", lambda *a, **k: FakeResponse(429))
+    with pytest.raises(RuntimeError):
+        est._chat([], "key")
+    assert est._active_idx >= len(est.models)
+
+    est.reset_cycle_spend()
+    assert est._active_idx == 0
+    assert est._failed_models == {}
+    assert est.model == "model-a"

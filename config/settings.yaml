@@ -44,9 +44,17 @@ polymarket:
   # credit), 404 (model retired), 429 (rate limited) or provider 5xx -- so a dead model
   # or an empty balance degrades the agent instead of silently blinding it.
   # ":free" models cost nothing and don't consume llm_max_spend_per_cycle_usd.
+  # Free models first, so the agent keeps reasoning at a $0 OpenRouter balance. Free
+  # tiers are also heavily rate-limited (429), which the chain handles by falling
+  # through. Verify these still exist before trusting them -- model slugs get retired
+  # regularly (gpt-oss-20b:free 404'd here, and claude-3.5-sonnet before it):
+  #   curl -s https://openrouter.ai/api/v1/models | grep -o '"id":"[^"]*:free"'
   llm_models:
-    - "openai/gpt-oss-20b:free"
-    - "anthropic/claude-sonnet-5"
+    - "nvidia/nemotron-3-ultra-550b-a55b:free"   # largest free reasoning model
+    - "google/gemma-4-31b-it:free"               # instruction-tuned, reliable JSON
+    - "nvidia/nemotron-3-super-120b-a12b:free"
+    - "thinkingmachines/inkling:free"
+    - "anthropic/claude-sonnet-5"                # paid; used once credit is available
   llm_model: "anthropic/claude-sonnet-5"   # legacy single-model fallback
   llm_max_spend_per_cycle_usd: 0.50
   llm_estimated_cost_per_call_usd: 0.01
