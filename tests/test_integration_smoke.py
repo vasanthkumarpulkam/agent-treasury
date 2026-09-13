@@ -49,7 +49,7 @@ class FakeBitcoinClient:
                 for i in range(limit)]
 
     def fetch_ticker(self):
-        return {"ask": 50000.0, "bid": 49990.0}
+        return {"ask": 50000.0, "bid": 49990.0, "last": 49995.0}
 
     def execute(self, proposal, approved_size_usd, mode):
         return {"fill_price": proposal.limit_price, "fill_size_usd": approved_size_usd,

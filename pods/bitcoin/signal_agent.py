@@ -63,6 +63,14 @@ class BitcoinSignalAgent:
             return []
 
         confidence = min(signal["trend_strength"] * 10, 1.0)
+        min_confidence = self.cfg.get("min_confidence", 0.15)
+        if confidence < min_confidence:
+            logger.info(
+                "Trend flip detected (%s) but confidence %.3f < min_confidence %.3f -- "
+                "treating as noise, not trading",
+                desired_side, confidence, min_confidence,
+            )
+            return []
         proposal = Proposal(
             leg="bitcoin",
             market_or_symbol=self.cfg["symbol"],

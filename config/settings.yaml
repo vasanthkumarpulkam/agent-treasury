@@ -38,6 +38,7 @@ bitcoin:
   vol_lookback: 30
   vol_size_scaling: true
   max_leverage: 1.0
+  min_confidence: 0.15
 
 scheduler:
   poll_interval_minutes: 60

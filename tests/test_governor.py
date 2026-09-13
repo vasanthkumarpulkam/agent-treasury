@@ -144,3 +144,56 @@ def test_settle_realized_pnl_sweeps_operating_reserve(governor):
     governor.settle_realized_pnl(position_id, realized_pnl_usd=100.0, leg="bitcoin")
     reserve_after = governor.db.get_state("operating_reserve_usd", 0.0)
     assert reserve_after - reserve_before == pytest.approx(15.0, abs=0.01)
+
+
+def test_close_positions_for_leg_realizes_profit_on_long():
+    tmp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    db = Database(tmp_db.name)
+    cfg = make_config()
+    g = Governor(db, cfg, {"polymarket": FakeExecutionClient(), "bitcoin": FakeExecutionClient()})
+
+    p = Proposal(leg="bitcoin", market_or_symbol="BTC/USD", side="buy", size_usd=40,
+                 confidence=0.8, rationale="test", limit_price=50000)
+    decision = g.review(p)
+    g.execute(decision, mode="paper")
+
+    # Price rose 10% -- a $40 long should realize +$4.
+    total_pnl = g.close_positions_for_leg("bitcoin", current_price=55000)
+    assert total_pnl == pytest.approx(4.0, abs=0.01)
+    assert g.db.open_positions(leg="bitcoin") == []
+    os.unlink(tmp_db.name)
+
+
+def test_close_positions_for_leg_realizes_profit_on_short():
+    tmp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    db = Database(tmp_db.name)
+    cfg = make_config()
+    g = Governor(db, cfg, {"polymarket": FakeExecutionClient(), "bitcoin": FakeExecutionClient()})
+
+    p = Proposal(leg="bitcoin", market_or_symbol="BTC/USD", side="sell", size_usd=40,
+                 confidence=0.8, rationale="test", limit_price=50000)
+    decision = g.review(p)
+    g.execute(decision, mode="paper")
+
+    # Price fell 10% -- a $40 short should realize +$4.
+    total_pnl = g.close_positions_for_leg("bitcoin", current_price=45000)
+    assert total_pnl == pytest.approx(4.0, abs=0.01)
+    os.unlink(tmp_db.name)
+
+
+def test_close_positions_updates_equity_via_realized_pnl():
+    tmp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    db = Database(tmp_db.name)
+    cfg = make_config()
+    g = Governor(db, cfg, {"polymarket": FakeExecutionClient(), "bitcoin": FakeExecutionClient()})
+
+    p = Proposal(leg="bitcoin", market_or_symbol="BTC/USD", side="buy", size_usd=40,
+                 confidence=0.8, rationale="test", limit_price=50000)
+    decision = g.review(p)
+    g.execute(decision, mode="paper")
+
+    equity_before = g.current_equity_usd()
+    g.close_positions_for_leg("bitcoin", current_price=55000)
+    equity_after = g.current_equity_usd()
+    assert equity_after - equity_before == pytest.approx(4.0, abs=0.01)
+    os.unlink(tmp_db.name)

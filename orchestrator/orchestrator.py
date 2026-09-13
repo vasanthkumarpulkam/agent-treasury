@@ -39,7 +39,18 @@ class Orchestrator:
         if btc_multiplier > 0:
             open_btc = self.governor.db.open_positions(leg="bitcoin")
             current_side = open_btc[0]["side"] if open_btc else None
-            proposals += self.bitcoin_agent.generate_proposals(btc_equity, current_side=current_side)
+            btc_proposals = self.bitcoin_agent.generate_proposals(btc_equity, current_side=current_side)
+
+            # If the signal is flipping sides, close the existing position (realizing its
+            # actual P&L) BEFORE the new opposite-side proposal is reviewed -- otherwise
+            # exposure only ever grows and realized_pnl never reflects BTC trades at all.
+            if btc_proposals and open_btc:
+                new_side = btc_proposals[0].side
+                if new_side != current_side:
+                    current_price = self.bitcoin_agent.client.fetch_ticker()["last"]
+                    self.governor.close_positions_for_leg("bitcoin", current_price)
+
+            proposals += btc_proposals
         else:
             logger.warning("Bitcoin leg allocation is zeroed out; skipping proposal generation")
 

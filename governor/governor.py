@@ -191,6 +191,36 @@ class Governor:
         )
         return fill
 
+    def close_positions_for_leg(self, leg: str, current_price: float) -> float:
+        """Mark-to-market close every open position in a leg at current_price, realizing
+        P&L through settle_realized_pnl for each. Returns total realized P&L.
+
+        This exists because nothing was previously closing Bitcoin positions when the
+        trend signal flipped -- new positions just kept opening on top of old ones,
+        exposure grew without bound, and realized_pnl (which the entire kill-switch is
+        built on) never moved from BTC trades at all. Call this before opening an
+        opposite-side position, not after -- old exposure should be gone before new
+        exposure is added, so max_total_exposure_pct in review() sees the real picture."""
+        total_pnl = 0.0
+        for position in self.db.open_positions(leg=leg):
+            entry_price = position["entry_price"]
+            size_usd = position["size_usd"]
+            if entry_price <= 0:
+                logger.warning("Skipping position %s with invalid entry_price=%s", position["id"], entry_price)
+                continue
+            price_change_pct = (current_price / entry_price) - 1
+            # "buy" (long) profits when price rises; "sell" (short, paper-simulated only
+            # -- there is no real short mechanism here) profits when price falls.
+            pnl_pct = price_change_pct if position["side"] == "buy" else -price_change_pct
+            pnl_usd = size_usd * pnl_pct
+            self.settle_realized_pnl(position["id"], pnl_usd, leg=leg)
+            total_pnl += pnl_usd
+            logger.info(
+                "CLOSED [%s] position %s: entry=%.4f exit=%.4f size=$%.2f pnl=$%.2f",
+                leg, position["id"], entry_price, current_price, size_usd, pnl_usd,
+            )
+        return total_pnl
+
     def settle_realized_pnl(self, position_id: int, realized_pnl_usd: float, leg: str):
         self.db.close_position(position_id, realized_pnl_usd)
         equity = self.current_equity_usd() + realized_pnl_usd
