@@ -99,11 +99,18 @@ class PolymarketResearchAgent:
 
         min_volume = self.cfg.get("min_volume_usd", 0)
         if min_volume:
-            try:
-                if float(market.get("volumeNum") or market.get("volume") or 0) < min_volume:
-                    return False
-            except (ValueError, TypeError):
-                pass
+            raw = (market.get("volumeNum") or market.get("volume")
+                   or market.get("volume24hr") or market.get("liquidityNum"))
+            # Fail OPEN when volume is unavailable. Failing closed silently discarded
+            # every market in a live run -- the field wasn't present, 0 < threshold was
+            # true for everything, and the agent scored nothing while reporting success.
+            # An unknown value must never look identical to a disqualifying one.
+            if raw is not None:
+                try:
+                    if float(raw) < min_volume:
+                        return False
+                except (ValueError, TypeError):
+                    pass
 
         return True
 
@@ -193,21 +200,33 @@ class PolymarketResearchAgent:
         proposals = []
         self.llm.reset_cycle_spend()
 
+        pool_size = self.cfg.get("market_pool_size", 100)
         try:
-            markets = self.client.list_active_markets(limit=self.cfg["max_markets_per_cycle"])
+            pool = self.client.list_active_markets(limit=pool_size)
         except Exception as e:
             logger.warning("Failed to fetch Polymarket markets: %s", e)
             return proposals
 
         allowlist = set(self.cfg.get("category_allowlist") or [])
-
-        for market in markets:
-            category = market.get("category", "")
-            if allowlist and category not in allowlist:
+        eligible = []
+        for market in pool:
+            if allowlist and market.get("category", "") not in allowlist:
                 continue
-
             if not self._is_worth_scoring(market):
                 continue
+            eligible.append(market)
+
+        markets = eligible[: self.cfg["max_markets_per_cycle"]]
+        logger.info("Market selection: fetched %d, %d eligible, scoring %d",
+                    len(pool), len(eligible), len(markets))
+        if not markets:
+            logger.warning(
+                "No markets passed selection filters. Loosen min_volume_usd (%s) or "
+                "exclude_keywords in config, or the agent will score nothing every cycle.",
+                self.cfg.get("min_volume_usd"))
+            return proposals
+
+        for market in markets:
 
             implied = self._implied_prob(market)
             if implied is None:

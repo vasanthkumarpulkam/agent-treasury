@@ -163,3 +163,35 @@ def test_gate_allows_confident_estimates():
     est = {"probability": 0.65, "confidence": 0.75, "reasoning": "strong basis"}
     ok, reason = agent._passes_trade_gates(implied=0.50, fair_value=0.65, edge=0.15, estimate=est)
     assert ok is True
+
+
+def test_missing_volume_field_does_not_filter_market_out():
+    """Regression: failing closed on absent volume data silently discarded every market
+    in a live run, and the agent reported success while scoring nothing."""
+    agent = make_gate_agent()
+    agent.cfg["min_volume_usd"] = 20000
+    agent.cfg["exclude_keywords"] = []
+    assert agent._is_worth_scoring({"question": "Will X happen?"}) is True
+
+
+def test_low_volume_market_is_filtered_when_volume_known():
+    agent = make_gate_agent()
+    agent.cfg["min_volume_usd"] = 20000
+    agent.cfg["exclude_keywords"] = []
+    assert agent._is_worth_scoring({"question": "Q", "volumeNum": 500}) is False
+
+
+def test_high_volume_market_passes():
+    agent = make_gate_agent()
+    agent.cfg["min_volume_usd"] = 20000
+    agent.cfg["exclude_keywords"] = []
+    assert agent._is_worth_scoring({"question": "Q", "volumeNum": 50000}) is True
+
+
+def test_excluded_keywords_filter_sports_props():
+    agent = make_gate_agent()
+    agent.cfg["exclude_keywords"] = ["O/U", "Exact Score"]
+    agent.cfg["min_volume_usd"] = 0
+    assert agent._is_worth_scoring({"question": "Team A vs B: O/U 2.5 goals"}) is False
+    assert agent._is_worth_scoring({"question": "Exact Score: 0-3?"}) is False
+    assert agent._is_worth_scoring({"question": "Will the bill pass by June?"}) is True

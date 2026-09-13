@@ -83,6 +83,7 @@ class ArbitrageAgent:
         """YES_ask + NO_ask < $1 means both sides cost less than the guaranteed payout."""
         opportunities = []
         min_profit = self.cfg.get("min_profit_pct", 0.02)
+        self.best_binary = None   # closest near-miss, for reporting
 
         for market in markets:
             yes_token, no_token = self._tokens(market)
@@ -96,6 +97,8 @@ class ArbitrageAgent:
 
             basket_cost = yes_price + no_price
             profit_pct = 1.0 - basket_cost
+            if self.best_binary is None or profit_pct > self.best_binary[0]:
+                self.best_binary = (profit_pct, market.get("question", "")[:60])
             if profit_pct < min_profit:
                 continue
 
@@ -123,6 +126,7 @@ class ArbitrageAgent:
         """For mutually exclusive + exhaustive events, all YES prices must sum to $1."""
         opportunities = []
         min_profit = self.cfg.get("min_profit_pct", 0.02)
+        self.best_basket = None
 
         for event in events:
             # Only negRisk events are guaranteed mutually exclusive AND exhaustive.
@@ -154,6 +158,8 @@ class ArbitrageAgent:
                 continue
 
             profit_pct = 1.0 - total_cost
+            if self.best_basket is None or profit_pct > self.best_basket[0]:
+                self.best_basket = (profit_pct, event.get("title", "")[:60])
             if profit_pct < min_profit:
                 continue
 
@@ -217,7 +223,16 @@ class ArbitrageAgent:
                                f"${total_price:.4f} -> $1.00), leg @ {price:.4f}"),
                 ))
 
-        if proposals:
-            logger.info("Arbitrage agent produced %d legs across %d opportunities",
-                        len(proposals), len(opportunities))
+        # Report the closest near-miss. "Found nothing" is ambiguous -- it could mean the
+        # scan is broken, the threshold is unreachable, or the market is simply efficient.
+        # The best observed spread distinguishes those, and shows whether min_profit_pct
+        # is set somewhere reality can actually reach.
+        best_bin = getattr(self, "best_binary", None)
+        best_bas = getattr(self, "best_basket", None)
+        logger.info("Arbitrage scan: %d markets, %d events -> %d opportunities "
+                    "(best binary %s, best basket %s; threshold %.2f%%)",
+                    len(markets), len(events), len(opportunities),
+                    f"{best_bin[0]*100:+.2f}% on {best_bin[1]!r}" if best_bin else "none",
+                    f"{best_bas[0]*100:+.2f}% on {best_bas[1]!r}" if best_bas else "none",
+                    self.cfg.get("min_profit_pct", 0.02) * 100)
         return proposals

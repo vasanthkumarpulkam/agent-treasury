@@ -55,6 +55,7 @@ polymarket:
   # anything. Live runs wasted most of a cycle on Serbian 2nd-division corner counts and
   # Taipei weather, where the model correctly reported it had no information.
   min_volume_usd: 20000
+  market_pool_size: 100     # fetch this many, then filter down to max_markets_per_cycle
   exclude_keywords:
     - "O/U"
     - "Exact Score"
