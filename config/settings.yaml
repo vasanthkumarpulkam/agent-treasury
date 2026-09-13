@@ -6,7 +6,7 @@ kill_switch:
   max_drawdown_pct: 0.30
   rolling_loss_window_days: 30
   rolling_loss_pct: 0.10
-  min_operating_reserve_usd: 20
+  min_operating_reserve_usd: 5
   resurrection_mode: manual
 
 allocation:
