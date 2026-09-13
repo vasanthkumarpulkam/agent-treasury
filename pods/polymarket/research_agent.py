@@ -5,6 +5,7 @@ OPENROUTER_API_KEY is set, and falls back to the market's own implied probabilit
 zero manufactured edge) otherwise. Either way, min_edge_pct / kelly_fraction downstream
 are what actually protect you from a bad estimate -- they don't fix one.
 """
+import json
 import logging
 from governor.models import Proposal
 from pods.polymarket.llm_estimator import LLMEstimator
@@ -19,10 +20,24 @@ class PolymarketResearchAgent:
         self.llm = LLMEstimator(config)
 
     def _implied_prob(self, market: dict) -> float:
+        """Polymarket's Gamma API returns outcomePrices as a STRINGIFIED JSON array
+        (e.g. the literal text '["0.55", "0.45"]'), not an actual list. Indexing a raw
+        string with [0] silently grabs the character '[' instead of a price and fails to
+        parse as a float -- which used to fall back to 0.5 for every market, poisoning
+        every edge calculation and position size with a fake 50/50 implied price. Handle
+        both the (correct) list case and the (actual, observed) stringified case."""
+        raw = market.get("outcomePrices")
+        if raw is None:
+            logger.warning("Market %r has no outcomePrices field", market.get("question", "?"))
+            return None
         try:
-            return float(market["outcomePrices"][0])
-        except (KeyError, IndexError, ValueError, TypeError):
-            return 0.5
+            if isinstance(raw, str):
+                raw = json.loads(raw)
+            return float(raw[0])
+        except (KeyError, IndexError, ValueError, TypeError, json.JSONDecodeError) as e:
+            logger.warning("Could not parse outcomePrices for market %r: %r (%s)",
+                            market.get("question", "?"), raw, e)
+            return None
 
     def generate_proposals(self, equity_usd: float) -> list:
         proposals = []
@@ -42,6 +57,9 @@ class PolymarketResearchAgent:
                 continue
 
             implied = self._implied_prob(market)
+            if implied is None:
+                continue  # never trade on an unparseable/fake price
+
             question = market.get("question", "")
             description = market.get("description", "")
 
