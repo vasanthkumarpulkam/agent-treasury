@@ -60,6 +60,28 @@ CREATE TABLE IF NOT EXISTS system_state (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+-- Every probability estimate the research agent makes, whether or not it led to a trade.
+-- The ones that DIDN'T clear the edge threshold matter just as much for calibration:
+-- scoring only the trades you took tells you nothing about whether the model is any good.
+CREATE TABLE IF NOT EXISTS estimates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL NOT NULL,
+    market_id TEXT,
+    condition_id TEXT,
+    slug TEXT,
+    question TEXT,
+    token_id TEXT,
+    model_name TEXT,
+    implied_prob REAL NOT NULL,
+    model_prob REAL NOT NULL,
+    llm_confidence REAL,
+    edge REAL,
+    traded INTEGER NOT NULL DEFAULT 0,
+    reasoning TEXT,
+    outcome INTEGER,          -- NULL = still unresolved, 1 = resolved YES, 0 = resolved NO
+    resolved_ts REAL
+);
 """
 
 
@@ -196,3 +218,50 @@ class Database:
                 (ts_cutoff,),
             ).fetchone()
             return row["s"]
+
+    # --- estimates / calibration ---
+    def insert_estimate(self, market_id, condition_id, slug, question, token_id, model_name,
+                         implied_prob, model_prob, llm_confidence, edge, traded, reasoning) -> int:
+        with self._conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO estimates(ts, market_id, condition_id, slug, question, token_id, "
+                "model_name, implied_prob, model_prob, llm_confidence, edge, traded, reasoning) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (time.time(), market_id, condition_id, slug, question, token_id, model_name,
+                 implied_prob, model_prob, llm_confidence, edge, 1 if traded else 0, reasoning),
+            )
+            return cur.lastrowid
+
+    def unresolved_estimates(self, min_age_seconds: float = 0):
+        """Estimates with no recorded outcome yet. min_age_seconds avoids re-checking
+        markets that were only just scored and can't possibly have resolved."""
+        cutoff = time.time() - min_age_seconds
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM estimates WHERE outcome IS NULL AND ts <= ? ORDER BY ts",
+                (cutoff,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def record_estimate_outcome(self, estimate_id: int, outcome: int):
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE estimates SET outcome=?, resolved_ts=? WHERE id=?",
+                (outcome, time.time(), estimate_id),
+            )
+
+    def resolved_estimates(self):
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM estimates WHERE outcome IS NOT NULL ORDER BY ts"
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def estimate_counts(self) -> dict:
+        with self._conn() as conn:
+            total = conn.execute("SELECT COUNT(*) n FROM estimates").fetchone()["n"]
+            resolved = conn.execute(
+                "SELECT COUNT(*) n FROM estimates WHERE outcome IS NOT NULL"
+            ).fetchone()["n"]
+            traded = conn.execute("SELECT COUNT(*) n FROM estimates WHERE traded=1").fetchone()["n"]
+            return {"total": total, "resolved": resolved, "traded": traded}

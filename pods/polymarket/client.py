@@ -65,13 +65,15 @@ class PolymarketClient:
 
     def _live_fill(self, proposal, approved_size_usd: float) -> dict:
         from py_clob_client.clob_types import OrderArgs
-        from py_clob_client.order_builder.constants import BUY, SELL
+        from py_clob_client.order_builder.constants import BUY
 
-        side = BUY if proposal.side == "buy_yes" else SELL
+        # Always BUY: the research agent already selected WHICH token (YES or NO) to buy.
+        # Betting against an outcome means buying its NO token, not selling YES -- you
+        # can't sell a token you don't hold on the CLOB.
         order_args = OrderArgs(
             price=proposal.limit_price,
             size=approved_size_usd / proposal.limit_price,
-            side=side,
+            side=BUY,
             token_id=proposal.market_or_symbol,
         )
         signed_order = self._clob_client.create_order(order_args)

@@ -14,10 +14,49 @@ logger = logging.getLogger("polymarket_research_agent")
 
 
 class PolymarketResearchAgent:
-    def __init__(self, client, config: dict):
+    def __init__(self, client, config: dict, db=None):
         self.client = client
         self.cfg = config["polymarket"]
-        self.llm = LLMEstimator(config)
+        self.db = db  # optional: when present, every estimate is logged for calibration
+        if self.cfg.get("use_debate"):
+            from pods.polymarket.debate_estimator import DebateEstimator
+            self.llm = DebateEstimator(config)
+            logger.info("Using Bull/Bear/Judge debate estimator (3x LLM cost per market)")
+        else:
+            self.llm = LLMEstimator(config)
+
+    @staticmethod
+    def _parse_gamma_array(raw):
+        """Several Gamma API fields (outcomePrices, clobTokenIds) come back as a
+        STRINGIFIED JSON array -- the literal text '["a", "b"]' rather than a list.
+        Indexing that raw string with [0] yields the character '[', which is how this
+        codebase previously ended up trading a token id of '[' at a fake price of 0.5.
+        Returns a real list, or None if it can't be parsed."""
+        if raw is None:
+            return None
+        try:
+            if isinstance(raw, str):
+                raw = json.loads(raw)
+            return list(raw)
+        except (ValueError, TypeError, json.JSONDecodeError):
+            return None
+
+    def _outcome_tokens(self, market: dict):
+        """Returns (yes_token_id, no_token_id) or (None, None)."""
+        tokens = self._parse_gamma_array(market.get("clobTokenIds"))
+        if not tokens or len(tokens) < 2:
+            return None, None
+        return str(tokens[0]), str(tokens[1])
+
+    def _outcome_prices(self, market: dict):
+        """Returns (yes_price, no_price) or (None, None)."""
+        prices = self._parse_gamma_array(market.get("outcomePrices"))
+        if not prices or len(prices) < 2:
+            return None, None
+        try:
+            return float(prices[0]), float(prices[1])
+        except (ValueError, TypeError):
+            return None, None
 
     def _implied_prob(self, market: dict) -> float:
         """Polymarket's Gamma API returns outcomePrices as a STRINGIFIED JSON array
@@ -38,6 +77,29 @@ class PolymarketResearchAgent:
             logger.warning("Could not parse outcomePrices for market %r: %r (%s)",
                             market.get("question", "?"), raw, e)
             return None
+
+
+    def _log_estimate(self, market, question, implied, estimate, edge, traded):
+        if self.db is None:
+            return
+        try:
+            self.db.insert_estimate(
+                market_id=str(market.get("id", "")),
+                condition_id=market.get("conditionId", ""),
+                slug=market.get("slug", ""),
+                question=question,
+                token_id=(market.get("clobTokenIds") or [None])[0],
+                model_name=getattr(self.llm, "model", "unknown"),
+                implied_prob=implied,
+                model_prob=estimate["probability"],
+                llm_confidence=estimate["confidence"],
+                edge=edge,
+                traded=traded,
+                reasoning=estimate.get("reasoning", ""),
+            )
+        except Exception as e:
+            # Never let calibration bookkeeping break the trading path.
+            logger.warning("Failed to log estimate: %s", e)
 
     def generate_proposals(self, equity_usd: float) -> list:
         proposals = []
@@ -67,21 +129,35 @@ class PolymarketResearchAgent:
             fair_value = estimate["probability"]
             edge = fair_value - implied
 
-            if abs(edge) < self.cfg["min_edge_pct"]:
+            will_trade = (
+                abs(edge) >= self.cfg["min_edge_pct"]
+                and estimate["confidence"] > 0
+            )
+
+            # Log EVERY estimate, not just the traded ones. Scoring only the trades you
+            # took is survivorship bias -- it tells you nothing about whether the model
+            # is actually calibrated. See analysis/calibration.py.
+            self._log_estimate(market, question, implied, estimate, edge, will_trade)
+
+            if not will_trade:
                 continue
 
-            # Low LLM confidence should shrink size even if the raw edge looks big --
-            # confidence 0 (no API key / fallback / error) means edge is meaningless here.
-            if estimate["confidence"] <= 0:
-                continue
-
-            side = "buy_yes" if edge > 0 else "buy_no"
             sizing_confidence = min(abs(edge) * 2, 1.0) * estimate["confidence"]
             kelly_size = equity_usd * self.cfg["kelly_fraction"] * sizing_confidence
 
-            token_id = market.get("clobTokenIds", [None])[0]
-            if token_id is None:
+            yes_token, no_token = self._outcome_tokens(market)
+            yes_price, no_price = self._outcome_prices(market)
+            if not yes_token or not no_token or yes_price is None or no_price is None:
+                logger.warning("Skipping market %r: unusable tokens/prices", question[:60])
                 continue
+
+            # On Polymarket you bet AGAINST an outcome by BUYING the NO token -- not by
+            # selling YES (you can't sell a token you don't hold on the CLOB). So each
+            # proposal names the specific token being bought and that token's own price.
+            if edge > 0:
+                side, token_id, token_price = "buy_yes", yes_token, yes_price
+            else:
+                side, token_id, token_price = "buy_no", no_token, no_price
 
             proposals.append(Proposal(
                 leg="polymarket",
@@ -89,7 +165,7 @@ class PolymarketResearchAgent:
                 side=side,
                 size_usd=round(kelly_size, 2),
                 confidence=sizing_confidence,
-                limit_price=implied,
+                limit_price=token_price,
                 rationale=(
                     f"market='{question}' implied={implied:.3f} model={fair_value:.3f} "
                     f"edge={edge:+.3f} llm_confidence={estimate['confidence']:.2f} "

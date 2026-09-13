@@ -58,7 +58,7 @@ def main():
         "bitcoin": bitcoin_client,
     })
 
-    polymarket_agent = PolymarketResearchAgent(polymarket_client, config)
+    polymarket_agent = PolymarketResearchAgent(polymarket_client, config, db=db)
     bitcoin_agent = BitcoinSignalAgent(bitcoin_client, config)
 
     orchestrator = Orchestrator(governor, polymarket_agent, bitcoin_agent, mode=mode)

@@ -78,35 +78,13 @@ class LLMEstimator:
         )
 
         try:
-            resp = requests.post(
-                OPENROUTER_URL,
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                    # Optional but recommended by OpenRouter for attribution/rate-limit context.
-                    "HTTP-Referer": "https://github.com/vasanthkumarpulkam/agent-treasury",
-                    "X-Title": "agent-treasury",
-                },
-                json={
-                    "model": self.model,
-                    "messages": [
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    "temperature": 0.2,
-                    "max_tokens": 800,
-                    # Sonnet 5 is a reasoning-capable model; without this it can spend the
-                    # whole token budget on internal reasoning and return empty/truncated
-                    # content. We want the final JSON answer only, not the reasoning trace.
-                    "reasoning": {"enabled": False},
-                },
-                timeout=45,
+            content = self._chat(
+                [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ],
+                api_key,
             )
-            resp.raise_for_status()
-            self._spent_this_cycle += self.estimated_cost_per_call
-
-            message = resp.json()["choices"][0]["message"]
-            content = self._extract_text(message)
             if not content:
                 logger.warning("LLM returned empty content (message=%r)", message)
                 return {"probability": market_implied_prob, "confidence": 0.0, "reasoning": "empty LLM response"}
@@ -125,6 +103,32 @@ class LLMEstimator:
         except Exception as e:
             logger.warning("LLM estimate call failed (%s); falling back to implied probability", e)
             return {"probability": market_implied_prob, "confidence": 0.0, "reasoning": f"error: {e}"}
+
+    def _chat(self, messages: list, api_key: str, max_tokens: int = 800) -> str:
+        """One OpenRouter chat call. Charges the per-cycle spend budget and returns the
+        assistant's text (possibly empty). Raises on HTTP errors."""
+        resp = requests.post(
+            OPENROUTER_URL,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://github.com/vasanthkumarpulkam/agent-treasury",
+                "X-Title": "agent-treasury",
+            },
+            json={
+                "model": self.model,
+                "messages": messages,
+                "temperature": 0.2,
+                "max_tokens": max_tokens,
+                # Reasoning-capable models can otherwise spend the whole token budget on
+                # internal reasoning and return empty/truncated content.
+                "reasoning": {"enabled": False},
+            },
+            timeout=45,
+        )
+        resp.raise_for_status()
+        self._spent_this_cycle += self.estimated_cost_per_call
+        return self._extract_text(resp.json()["choices"][0]["message"])
 
     @staticmethod
     def _extract_text(message: dict) -> str:

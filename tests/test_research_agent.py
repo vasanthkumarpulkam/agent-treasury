@@ -51,3 +51,29 @@ def test_implied_prob_never_silently_falls_back_to_half():
     for bad_market in [{}, {"outcomePrices": None}, {"outcomePrices": "[]"}, {"outcomePrices": "{}"}]:
         result = agent._implied_prob(bad_market)
         assert result != 0.5, f"silently produced fake 0.5 for {bad_market!r}"
+
+
+def test_parse_gamma_array_handles_stringified_token_ids():
+    """clobTokenIds has the same stringified-array quirk as outcomePrices -- this is what
+    caused a token id of '[' to be sent as a live order identifier."""
+    agent = make_agent()
+    tokens = agent._parse_gamma_array('["111111", "222222"]')
+    assert tokens == ["111111", "222222"]
+
+
+def test_outcome_tokens_returns_yes_and_no():
+    agent = make_agent()
+    market = {"clobTokenIds": '["yes-token", "no-token"]'}
+    assert agent._outcome_tokens(market) == ("yes-token", "no-token")
+
+
+def test_outcome_tokens_returns_none_when_unusable():
+    agent = make_agent()
+    assert agent._outcome_tokens({}) == (None, None)
+    assert agent._outcome_tokens({"clobTokenIds": '["only-one"]'}) == (None, None)
+
+
+def test_outcome_prices_parses_both_sides():
+    agent = make_agent()
+    market = {"outcomePrices": '["0.62", "0.38"]'}
+    assert agent._outcome_prices(market) == (0.62, 0.38)

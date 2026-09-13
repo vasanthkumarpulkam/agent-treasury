@@ -29,6 +29,7 @@ polymarket:
   llm_model: "anthropic/claude-sonnet-5"
   llm_max_spend_per_cycle_usd: 0.50
   llm_estimated_cost_per_call_usd: 0.01
+  use_debate: false   # Bull/Bear/Judge multi-pass estimation (3x LLM cost per market)
 
 bitcoin:
   symbol: "BTC/USD"
