@@ -66,6 +66,23 @@ def analyze(db) -> dict:
 
     beats_market = model_brier < market_brier
 
+    # Per-model breakdown. This is the honest version of "auto model changer": rather
+    # than guessing which model is best, score each one against real outcomes and let
+    # the data decide. Reorder llm_models in config based on what actually wins here.
+    by_model = {}
+    for e in resolved:
+        by_model.setdefault(e["model_name"] or "unknown", []).append(e)
+    model_table = []
+    for name, rows in sorted(by_model.items()):
+        m_brier = brier_score([r["model_prob"] for r in rows], [r["outcome"] for r in rows])
+        mk_brier = brier_score([r["implied_prob"] for r in rows], [r["outcome"] for r in rows])
+        model_table.append({
+            "model": name, "n": len(rows),
+            "model_brier": m_brier, "market_brier": mk_brier,
+            "edge": mk_brier - m_brier,
+        })
+    model_table.sort(key=lambda r: r["edge"], reverse=True)
+
     return {
         "status": "ok",
         "counts": counts,
@@ -78,6 +95,7 @@ def analyze(db) -> dict:
         "traded_model_brier": traded_model_brier,
         "traded_market_brier": traded_market_brier,
         "bins": calibration_bins(model_probs, outcomes),
+        "by_model": model_table,
     }
 
 
@@ -119,6 +137,18 @@ def format_report(result: dict) -> str:
         lines.append(f"On the {result['n_traded_resolved']} resolved markets it actually traded:")
         lines.append(f"  model Brier : {result['traded_model_brier']:.4f}")
         lines.append(f"  market Brier: {result['traded_market_brier']:.4f}")
+
+    if result.get("by_model"):
+        lines.append("")
+        lines.append("BY MODEL (reorder config llm_models by this -- best edge first):")
+        lines.append(f"  {'model':<34}{'n':>5}{'model':>9}{'market':>9}{'edge':>8}")
+        for row in result["by_model"]:
+            lines.append(f"  {row['model'][:33]:<34}{row['n']:>5}{row['model_brier']:>9.4f}"
+                          f"{row['market_brier']:>9.4f}{row['edge']:>+8.4f}")
+        if len(result["by_model"]) > 1:
+            best = result["by_model"][0]
+            lines.append(f"  Best so far: {best['model']} (edge {best['edge']:+.4f} on {best['n']} markets)")
+            lines.append("  Small samples mislead -- don't reorder on a handful of resolutions.")
 
     lines.append("")
     lines.append("Calibration (predicted vs actual frequency):")

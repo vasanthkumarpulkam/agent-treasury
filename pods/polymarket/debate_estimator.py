@@ -59,7 +59,9 @@ class DebateEstimator(LLMEstimator):
                     "reasoning": "no API key configured"}
 
         # A debate costs 3 calls; don't start one we can't finish within budget.
-        if (self._spent_this_cycle + 3 * self.estimated_cost_per_call) > self.max_spend_per_cycle:
+        # Free models cost nothing, so they're never budget-blocked.
+        projected = self._spent_this_cycle + 3 * self._cost_of(self.model)
+        if not self._is_free(self.model) and projected > self.max_spend_per_cycle:
             logger.info("Not enough cycle budget left for a 3-call debate; skipping market")
             return {"probability": market_implied_prob, "confidence": 0.0,
                     "reasoning": "spend cap reached this cycle"}

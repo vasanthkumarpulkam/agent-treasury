@@ -27,6 +27,19 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 # check OpenRouter's dashboard for real spend, this is just a circuit breaker.
 DEFAULT_ESTIMATED_COST_PER_CALL_USD = 0.01
 
+# Ordered fallback chain. Free tier first so the agent keeps thinking even with a $0
+# OpenRouter balance -- an agent that stops reasoning because a card expired isn't
+# surviving on its merits.
+DEFAULT_MODELS = [
+    "openai/gpt-oss-20b:free",
+    "anthropic/claude-sonnet-5",
+]
+
+# HTTP statuses that mean "this model won't work, try the next one" rather than
+# "this request was bad". 402 = out of credit, 404 = model retired/unknown,
+# 429 = rate limited, 5xx = provider trouble.
+FALLBACK_STATUSES = {402, 404, 429, 500, 502, 503, 504}
+
 SYSTEM_PROMPT = (
     "You are a calibrated probability estimator for prediction markets. Given a market "
     "question and any provided context, estimate the true probability the market resolves "
@@ -43,18 +56,51 @@ SYSTEM_PROMPT = (
 class LLMEstimator:
     def __init__(self, config: dict):
         self.cfg = config["polymarket"]
-        self.model = self.cfg.get("llm_model", "anthropic/claude-3.5-sonnet")
+
+        # Model fallback chain, tried in order. A single hardcoded model is a single
+        # point of failure for an agent meant to survive unattended: model slugs get
+        # retired (claude-3.5-sonnet returned 404 once OpenRouter dropped it), accounts
+        # run out of credit (402), and providers rate-limit (429). Any of those would
+        # otherwise silently reduce the agent to "no edge" on every market forever.
+        models = self.cfg.get("llm_models")
+        if not models:
+            single = self.cfg.get("llm_model", DEFAULT_MODELS[0])
+            models = [single] if isinstance(single, str) else list(single)
+        self.models = list(models)
+
         self.max_spend_per_cycle = self.cfg.get("llm_max_spend_per_cycle_usd", 0.50)
         self.estimated_cost_per_call = self.cfg.get(
             "llm_estimated_cost_per_call_usd", DEFAULT_ESTIMATED_COST_PER_CALL_USD
         )
         self._spent_this_cycle = 0.0
+        # Index of the model currently believed to work. Sticky across calls within a run
+        # so a dead model isn't re-tried 15 times in one cycle.
+        self._active_idx = 0
+        self._failed_models = {}
+
+    @property
+    def model(self) -> str:
+        """The model currently in use -- recorded against every estimate so the
+        calibration report can compare models on real outcomes."""
+        if self._active_idx < len(self.models):
+            return self.models[self._active_idx]
+        return self.models[-1] if self.models else "none"
+
+    def _is_free(self, model: str) -> bool:
+        return model.endswith(":free")
+
+    def _cost_of(self, model: str) -> float:
+        """Free-tier models don't consume the spend budget."""
+        return 0.0 if self._is_free(model) else self.estimated_cost_per_call
 
     def reset_cycle_spend(self):
         """Call once at the start of each orchestration cycle."""
         self._spent_this_cycle = 0.0
 
     def budget_remaining(self) -> bool:
+        # A free model always has budget -- it costs nothing to run.
+        if self._is_free(self.model):
+            return True
         return self._spent_this_cycle < self.max_spend_per_cycle
 
     def estimate(self, question: str, description: str, market_implied_prob: float) -> dict:
@@ -105,30 +151,63 @@ class LLMEstimator:
             return {"probability": market_implied_prob, "confidence": 0.0, "reasoning": f"error: {e}"}
 
     def _chat(self, messages: list, api_key: str, max_tokens: int = 800) -> str:
-        """One OpenRouter chat call. Charges the per-cycle spend budget and returns the
-        assistant's text (possibly empty). Raises on HTTP errors."""
-        resp = requests.post(
-            OPENROUTER_URL,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://github.com/vasanthkumarpulkam/agent-treasury",
-                "X-Title": "agent-treasury",
-            },
-            json={
-                "model": self.model,
-                "messages": messages,
-                "temperature": 0.2,
-                "max_tokens": max_tokens,
-                # Reasoning-capable models can otherwise spend the whole token budget on
-                # internal reasoning and return empty/truncated content.
-                "reasoning": {"enabled": False},
-            },
-            timeout=45,
-        )
-        resp.raise_for_status()
-        self._spent_this_cycle += self.estimated_cost_per_call
-        return self._extract_text(resp.json()["choices"][0]["message"])
+        """One chat completion, walking the model fallback chain on recoverable failures.
+
+        Returns the assistant's text (possibly empty). Raises only when EVERY model in
+        the chain has failed -- the caller treats that as "no estimate" and falls back to
+        the market price, so a total LLM outage costs nothing but missed opportunity."""
+        last_error = None
+
+        while self._active_idx < len(self.models):
+            model = self.models[self._active_idx]
+            try:
+                resp = requests.post(
+                    OPENROUTER_URL,
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                        "HTTP-Referer": "https://github.com/vasanthkumarpulkam/agent-treasury",
+                        "X-Title": "agent-treasury",
+                    },
+                    json={
+                        "model": model,
+                        "messages": messages,
+                        "temperature": 0.2,
+                        "max_tokens": max_tokens,
+                        # Reasoning-capable models can otherwise spend the whole token
+                        # budget on internal reasoning and return empty/truncated content.
+                        "reasoning": {"enabled": False},
+                    },
+                    timeout=45,
+                )
+
+                if resp.status_code in FALLBACK_STATUSES:
+                    reason = f"HTTP {resp.status_code}"
+                    self._demote(model, reason)
+                    last_error = reason
+                    continue
+
+                resp.raise_for_status()
+                self._spent_this_cycle += self._cost_of(model)
+                return self._extract_text(resp.json()["choices"][0]["message"])
+
+            except requests.RequestException as e:
+                self._demote(model, str(e))
+                last_error = str(e)
+                continue
+
+        raise RuntimeError(f"all {len(self.models)} models failed (last: {last_error})")
+
+    def _demote(self, model: str, reason: str):
+        """Mark a model unusable for the rest of this run and advance to the next."""
+        if model not in self._failed_models:
+            logger.warning("Model %r unusable (%s); falling back to next in chain", model, reason)
+            self._failed_models[model] = reason
+        self._active_idx += 1
+        if self._active_idx < len(self.models):
+            logger.info("Now using model %r", self.models[self._active_idx])
+        else:
+            logger.error("Entire model chain exhausted: %s", self._failed_models)
 
     @staticmethod
     def _extract_text(message: dict) -> str:
