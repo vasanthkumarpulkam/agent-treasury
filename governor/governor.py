@@ -282,6 +282,33 @@ class Governor:
 
         return GovernorDecision(True, proposal, reason="approved", approved_size_usd=round(approved_size, 2))
 
+    def review_bundle(self, proposals: list) -> list:
+        """Review a set of proposals that must execute together or not at all.
+
+        Returns a list of decisions, all approved or all rejected. Arbitrage depends on
+        holding every leg: fill 2 of 3 legs of a mutually-exclusive basket and you no
+        longer have a locked profit, you have a naked position on whichever outcome you
+        failed to cover. Approving legs individually would let position limits silently
+        trim one leg and convert a hedged trade into a directional one."""
+        decisions = [self.review(p) for p in proposals]
+
+        rejected = [d for d in decisions if not d.approved]
+        if rejected:
+            reason = f"bundle rejected: {rejected[0].reason}"
+            logger.info("Bundle of %d legs rejected -- %s", len(proposals), reason)
+            return [GovernorDecision(False, d.proposal, reason=reason) for d in decisions]
+
+        # Every leg must be fillable at full size; a trimmed leg breaks the hedge.
+        for d, p in zip(decisions, proposals):
+            if d.approved_size_usd < p.size_usd - 0.01:
+                reason = (f"bundle rejected: leg capped ${p.size_usd:.2f} -> "
+                          f"${d.approved_size_usd:.2f} by position limits, which would "
+                          f"leave the basket unhedged")
+                logger.info(reason)
+                return [GovernorDecision(False, x.proposal, reason=reason) for x in decisions]
+
+        return decisions
+
     def execute(self, decision: GovernorDecision, mode: str) -> dict:
         if not decision.approved:
             raise ValueError("execute() called on a non-approved decision")

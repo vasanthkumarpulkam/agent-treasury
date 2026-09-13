@@ -2,6 +2,18 @@ treasury:
   starting_capital_usd: 1000
   operating_reserve_pct: 0.15
 
+# Mechanical arbitrage: profit from internally inconsistent prices rather than from
+# predicting outcomes. No forecasting skill required -- the edge is arithmetic and is
+# verified before the trade is placed. This is the most defensible source of the small,
+# repeatable profits the agent needs to cover its rent.
+arbitrage:
+  enabled: true
+  min_profit_pct: 0.02      # require 2% locked profit; must exceed gas + slippage
+  max_position_usd: 100     # cap per opportunity
+  min_liquidity_usd: 20     # skip opportunities too thin to be worth the execution risk
+  scan_markets: 50
+  scan_events: 30
+
 # The economics of staying alive. This is what makes the survival mechanic real:
 # the agent pays rent every cycle out of a reserve that ONLY profits refill.
 survival:
@@ -39,6 +51,16 @@ polymarket:
   # The model reports its own confidence. When it says 0.10 and explains "no information
   # provided, defaulting to market price", believe it -- don't trade that.
   min_llm_confidence: 0.40
+  # Don't spend API budget on markets where a language model cannot plausibly know
+  # anything. Live runs wasted most of a cycle on Serbian 2nd-division corner counts and
+  # Taipei weather, where the model correctly reported it had no information.
+  min_volume_usd: 20000
+  exclude_keywords:
+    - "O/U"
+    - "Exact Score"
+    - "Total Corners"
+    - "1st Half"
+    - "Over/Under"
   kelly_fraction: 0.125
   category_allowlist: []
   market_allowlist: []

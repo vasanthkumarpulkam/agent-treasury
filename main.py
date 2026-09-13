@@ -8,6 +8,7 @@ from storage.db import Database
 from governor.governor import Governor
 from pods.polymarket.client import PolymarketClient
 from pods.polymarket.research_agent import PolymarketResearchAgent
+from pods.polymarket.arbitrage_agent import ArbitrageAgent
 from pods.bitcoin.client import BitcoinClient
 from pods.bitcoin.signal_agent import BitcoinSignalAgent
 from orchestrator.orchestrator import Orchestrator
@@ -61,7 +62,9 @@ def main():
     polymarket_agent = PolymarketResearchAgent(polymarket_client, config, db=db)
     bitcoin_agent = BitcoinSignalAgent(bitcoin_client, config)
 
-    orchestrator = Orchestrator(governor, polymarket_agent, bitcoin_agent, mode=mode)
+    arbitrage_agent = ArbitrageAgent(polymarket_client, config)
+    orchestrator = Orchestrator(governor, polymarket_agent, bitcoin_agent, mode=mode,
+                                 arbitrage_agent=arbitrage_agent)
     result = orchestrator.run_cycle()
 
     logger.info("Cycle result: %s", result["status"])

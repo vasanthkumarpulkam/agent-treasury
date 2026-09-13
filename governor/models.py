@@ -14,9 +14,14 @@ class Proposal:
     limit_price: float = None
     expiry_ts: float = field(default_factory=lambda: time.time() + 3600)
     source_data_ts: float = field(default_factory=time.time)
+    # Legs of an arbitrage share a bundle_id and MUST execute all-or-nothing. A partially
+    # filled arb isn't a reduced-profit arb, it's an unhedged directional bet -- exactly
+    # the risk the arbitrage was supposed to avoid.
+    bundle_id: str = None
 
     def idempotency_key(self) -> str:
-        raw = f"{self.leg}:{self.market_or_symbol}:{self.side}:{round(self.size_usd, 2)}:{int(self.source_data_ts)}"
+        raw = (f"{self.leg}:{self.market_or_symbol}:{self.side}:{round(self.size_usd, 2)}:"
+               f"{int(self.source_data_ts)}:{self.bundle_id or ''}")
         return hashlib.sha256(raw.encode()).hexdigest()[:32]
 
 

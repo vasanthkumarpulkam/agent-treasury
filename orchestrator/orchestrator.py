@@ -4,10 +4,12 @@ logger = logging.getLogger("orchestrator")
 
 
 class Orchestrator:
-    def __init__(self, governor, polymarket_agent, bitcoin_agent, mode: str):
+    def __init__(self, governor, polymarket_agent, bitcoin_agent, mode: str,
+                  arbitrage_agent=None):
         self.governor = governor
         self.polymarket_agent = polymarket_agent
         self.bitcoin_agent = bitcoin_agent
+        self.arbitrage_agent = arbitrage_agent
         self.mode = mode
 
     def _build_price_lookup(self) -> dict:
@@ -107,6 +109,26 @@ class Orchestrator:
             self.governor.charge_llm_spend(getattr(llm_spend, "_spent_this_cycle", 0.0))
 
         results = {"approved": [], "rejected": []}
+
+        # Arbitrage first: it's the only source of edge here that doesn't require being
+        # right about the future, so it gets first claim on capital and exposure limits.
+        if self.arbitrage_agent is not None:
+            arb_proposals = self.arbitrage_agent.generate_proposals(equity)
+            bundles = {}
+            for p in arb_proposals:
+                bundles.setdefault(p.bundle_id, []).append(p)
+
+            for bundle_id, legs in bundles.items():
+                decisions = self.governor.review_bundle(legs)
+                if all(d.approved for d in decisions):
+                    for d in decisions:
+                        fill = self.governor.execute(d, mode=self.mode)
+                        results["approved"].append({"proposal": d.proposal, "fill": fill})
+                    logger.info("ARB BUNDLE %s executed (%d legs)", bundle_id, len(legs))
+                else:
+                    for d in decisions:
+                        results["rejected"].append({"proposal": d.proposal, "reason": d.reason})
+
         for proposal in proposals:
             decision = self.governor.review(proposal)
             if decision.approved:

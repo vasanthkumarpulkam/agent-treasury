@@ -39,6 +39,25 @@ class PolymarketClient:
         resp.raise_for_status()
         return resp.json()
 
+    def list_active_events(self, limit: int = 30) -> list:
+        """Events group related markets. negRisk events are mutually exclusive and
+        exhaustive, which is what makes basket arbitrage valid."""
+        resp = requests.get(
+            f"{GAMMA_API}/events",
+            params={"active": "true", "closed": "false", "limit": limit,
+                    "order": "volume", "ascending": "false"},
+            timeout=20,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_orderbook(self, token_id: str) -> dict:
+        """Raw order book: {"bids": [...], "asks": [...]}. Arbitrage needs real depth at
+        real ask prices, not a mid-price summary."""
+        resp = requests.get(f"{CLOB_API}/book", params={"token_id": token_id}, timeout=15)
+        resp.raise_for_status()
+        return resp.json()
+
     def get_orderbook_prices(self, token_id: str) -> dict:
         resp = requests.get(f"{CLOB_API}/book", params={"token_id": token_id}, timeout=15)
         resp.raise_for_status()

@@ -167,3 +167,44 @@ def test_mark_to_market_drawdown_triggers_death_before_realizing_losses():
     g.check_kill_switch(price_lookup={"BTC/USD": 1000})  # position down ~98%
     assert g.is_killed()
     os.unlink(path)
+
+
+def test_bundle_rejected_entirely_if_any_leg_fails():
+    """Half an arbitrage is an unhedged bet, which is worse than no trade."""
+    from governor.models import Proposal
+    g, path = make_governor()
+    g._kill("dead", price_lookup={})  # killed system rejects everything
+    legs = [Proposal(leg="polymarket", market_or_symbol="a", side="buy_yes", size_usd=10,
+                     confidence=1.0, rationale="arb", limit_price=0.4, bundle_id="b1"),
+            Proposal(leg="polymarket", market_or_symbol="b", side="buy_yes", size_usd=10,
+                     confidence=1.0, rationale="arb", limit_price=0.5, bundle_id="b1")]
+    decisions = g.review_bundle(legs)
+    assert all(not d.approved for d in decisions)
+    os.unlink(path)
+
+
+def test_bundle_rejected_if_position_limits_would_trim_a_leg():
+    """A capped leg breaks the hedge, so the whole bundle must be refused."""
+    from governor.models import Proposal
+    g, path = make_governor()
+    # max_single_position_pct 0.05 of $1000 = $50 cap; ask for more on one leg.
+    legs = [Proposal(leg="polymarket", market_or_symbol="a", side="buy_yes", size_usd=20,
+                     confidence=1.0, rationale="arb", limit_price=0.4, bundle_id="b1"),
+            Proposal(leg="polymarket", market_or_symbol="b", side="buy_yes", size_usd=200,
+                     confidence=1.0, rationale="arb", limit_price=0.5, bundle_id="b1")]
+    decisions = g.review_bundle(legs)
+    assert all(not d.approved for d in decisions)
+    assert "unhedged" in decisions[0].reason
+    os.unlink(path)
+
+
+def test_bundle_approved_when_all_legs_fit():
+    from governor.models import Proposal
+    g, path = make_governor()
+    legs = [Proposal(leg="polymarket", market_or_symbol="a", side="buy_yes", size_usd=20,
+                     confidence=1.0, rationale="arb", limit_price=0.4, bundle_id="b1"),
+            Proposal(leg="polymarket", market_or_symbol="b", side="buy_yes", size_usd=25,
+                     confidence=1.0, rationale="arb", limit_price=0.5, bundle_id="b1")]
+    decisions = g.review_bundle(legs)
+    assert all(d.approved for d in decisions)
+    os.unlink(path)

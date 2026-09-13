@@ -79,6 +79,49 @@ class PolymarketResearchAgent:
             return None
 
 
+    def _is_worth_scoring(self, market: dict) -> bool:
+        """Filter out markets where an LLM has no plausible informational advantage.
+
+        Sorting Polymarket by volume surfaces things like "FK Zemun vs FK Radnik
+        Surdulica draw?", "Exact Score: Londrina 0-3?" and "Taipei high temp 25C?".
+        A language model knows nothing about Serbian second-division corner counts, and
+        it correctly said so in live runs ("no information provided, defaulting to the
+        market price"). Scoring them wastes API budget -- which is real money out of the
+        survival reserve -- to reliably learn nothing.
+
+        The filter is about where a model could plausibly know something: subjects with
+        rich public reporting, and markets liquid enough to trade."""
+        question = (market.get("question") or "").lower()
+
+        for term in self.cfg.get("exclude_keywords", []):
+            if term.lower() in question:
+                return False
+
+        min_volume = self.cfg.get("min_volume_usd", 0)
+        if min_volume:
+            try:
+                if float(market.get("volumeNum") or market.get("volume") or 0) < min_volume:
+                    return False
+            except (ValueError, TypeError):
+                pass
+
+        return True
+
+    def _build_context(self, market: dict, description: str) -> str:
+        parts = []
+        if description:
+            parts.append(f"RESOLUTION CRITERIA (read carefully -- the fine print is often "
+                         f"stricter than the headline suggests):\n{description[:2500]}")
+        if market.get("endDate"):
+            parts.append(f"Resolution date: {market['endDate']}")
+        volume = market.get("volumeNum") or market.get("volume")
+        if volume:
+            parts.append(f"Market volume: ${float(volume):,.0f} "
+                         f"(higher volume = more informed pricing = harder to beat)")
+        if market.get("category"):
+            parts.append(f"Category: {market['category']}")
+        return "\n\n".join(parts) if parts else "(no additional context available)"
+
     def _passes_trade_gates(self, implied, fair_value, edge, estimate):
         """Decide whether an estimate justifies a trade. Returns (will_trade, reason).
 
@@ -163,6 +206,9 @@ class PolymarketResearchAgent:
             if allowlist and category not in allowlist:
                 continue
 
+            if not self._is_worth_scoring(market):
+                continue
+
             implied = self._implied_prob(market)
             if implied is None:
                 continue  # never trade on an unparseable/fake price
@@ -170,7 +216,12 @@ class PolymarketResearchAgent:
             question = market.get("question", "")
             description = market.get("description", "")
 
-            estimate = self.llm.estimate(question, description, implied)
+            # Give the model the resolution criteria and market context, not just a
+            # headline. The fine print is where an LLM genuinely adds value: resolution
+            # rules are often stricter than the question implies, and casual traders
+            # price the headline.
+            context = self._build_context(market, description)
+            estimate = self.llm.estimate(question, context, implied)
             fair_value = estimate["probability"]
             edge = fair_value - implied
 
